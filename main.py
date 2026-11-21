@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 app = FastAPI(
     title="CLIPO ENGINE",
     description="AI-powered video clipping engine",
-    version="1.0.0"
+    version="1.0.1"
 )
 
 app.add_middleware(
@@ -22,7 +22,7 @@ def home():
     return {
         "project": "CLIPO",
         "message": "Welcome to Clipo Engine",
-        "version": "1.0.0",
+        "version": "1.0.1",
         "status": "running"
     }
 
