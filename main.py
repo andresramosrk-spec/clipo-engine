@@ -4,16 +4,26 @@ import tempfile
 import subprocess
 
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body
+from fastapi import (
+    FastAPI,
+    UploadFile,
+    File,
+    HTTPException,
+    Body,
+    Form
+)
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from analyzer import transcribe_audio
 from moments import detect_moments as find_moments
 
+
 app = FastAPI(
     title="CLIPO ENGINE",
     description="AI-powered video clipping engine",
-    version="1.3.0"
+    version="1.4.0"
 )
 
 app.add_middleware(
@@ -24,13 +34,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def cleanup_files(*paths):
+    for path in paths:
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 @app.get("/")
 def home():
     return {
         "project": "CLIPO",
-        "version": "1.3.0",
+        "version": "1.4.0",
         "status": "running"
     }
+
 
 @app.get("/health")
 def health():
@@ -38,6 +59,7 @@ def health():
         "status": "healthy",
         "engine": "CLIPO"
     }
+
 
 @app.get("/capabilities")
 def capabilities():
@@ -53,10 +75,12 @@ def capabilities():
             "vertical_9_16",
             "streamer_camera_detection",
             "spanish_subtitles",
-            "ffmpeg_video_processing"
+            "ffmpeg_video_processing",
+            "video_trimming"
         ],
         "status": "development"
     }
+
 
 @app.post("/analyze-audio")
 async def analyze_audio(file: UploadFile = File(...)):
@@ -114,8 +138,8 @@ async def analyze_audio(file: UploadFile = File(...)):
     finally:
         await file.close()
 
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
+        cleanup_files(temp_path)
+
 
 @app.post("/detect-moments")
 def detect_moments_endpoint(payload: dict = Body(...)):
@@ -155,6 +179,180 @@ def detect_moments_endpoint(payload: dict = Body(...)):
             status_code=500,
             detail=f"Error detectando momentos: {str(error)}"
         )
+
+
+@app.post("/cut-video")
+async def cut_video(
+    file: UploadFile = File(...),
+    start: float = Form(...),
+    end: float = Form(...)
+):
+    allowed = {".mp4", ".mov", ".mkv", ".webm"}
+
+    suffix = Path(file.filename or "").suffix.lower()
+
+    input_path = None
+    output_path = None
+
+    try:
+        if suffix not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail="Formato no permitido. Usa MP4, MOV, MKV o WEBM."
+            )
+
+        if start < 0 or end <= start:
+            raise HTTPException(
+                status_code=400,
+                detail="Los segundos de inicio y final no son válidos."
+            )
+
+        if end - start > 180:
+            raise HTTPException(
+                status_code=400,
+                detail="La duración máxima del clip es de 180 segundos."
+            )
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=suffix
+        ) as temp:
+            input_path = temp.name
+
+            total_size = 0
+
+            while True:
+                chunk = await file.read(1024 * 1024)
+
+                if not chunk:
+                    break
+
+                total_size += len(chunk)
+
+                if total_size > 300 * 1024 * 1024:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="El video supera el límite de 300 MB."
+                    )
+
+                temp.write(chunk)
+
+        if total_size == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="El video está vacío."
+            )
+
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                input_path
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if probe.returncode != 0:
+            raise HTTPException(
+                status_code=400,
+                detail="No se pudo leer la duración del video."
+            )
+
+        try:
+            video_duration = float(probe.stdout.strip())
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="No se pudo determinar la duración del video."
+            )
+
+        if end > video_duration:
+            raise HTTPException(
+                status_code=400,
+                detail=f"El video dura {video_duration:.2f} segundos. El segundo final supera su duración."
+            )
+
+        output_fd, output_path = tempfile.mkstemp(
+            suffix=".mp4"
+        )
+        os.close(output_fd)
+
+        command = [
+            "ffmpeg",
+            "-y",
+            "-ss", str(start),
+            "-i", input_path,
+            "-t", str(end - start),
+            "-map", "0:v:0",
+            "-map", "0:a?",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            "-sn",
+            "-dn",
+            output_path
+        ]
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=180
+        )
+
+        if result.returncode != 0 or not os.path.exists(output_path):
+            raise HTTPException(
+                status_code=500,
+                detail="FFmpeg no pudo generar el clip."
+            )
+
+        if os.path.getsize(output_path) == 0:
+            raise HTTPException(
+                status_code=500,
+                detail="El archivo generado está vacío."
+            )
+
+        return FileResponse(
+            path=output_path,
+            media_type="video/mp4",
+            filename="clipo_clip.mp4",
+            background=BackgroundTask(
+                cleanup_files,
+                input_path,
+                output_path
+            )
+        )
+
+    except HTTPException:
+        cleanup_files(input_path, output_path)
+        raise
+
+    except subprocess.TimeoutExpired:
+        cleanup_files(input_path, output_path)
+
+        raise HTTPException(
+            status_code=504,
+            detail="El procesamiento tardó demasiado. Intenta con un video más corto."
+        )
+
+    except Exception as error:
+        cleanup_files(input_path, output_path)
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error procesando el video: {str(error)}"
+        )
+
+    finally:
+        await file.close()
+
 
 @app.get("/video-engine")
 def video_engine():
