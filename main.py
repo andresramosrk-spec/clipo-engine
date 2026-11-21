@@ -19,11 +19,10 @@ from starlette.background import BackgroundTask
 from analyzer import transcribe_audio
 from moments import detect_moments as find_moments
 
-
 app = FastAPI(
     title="CLIPO ENGINE",
     description="AI-powered video clipping engine",
-    version="1.4.0"
+    version="1.5.0"
 )
 
 app.add_middleware(
@@ -34,7 +33,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 def cleanup_files(*paths):
     for path in paths:
         if path and os.path.exists(path):
@@ -43,15 +41,13 @@ def cleanup_files(*paths):
             except OSError:
                 pass
 
-
 @app.get("/")
 def home():
     return {
         "project": "CLIPO",
-        "version": "1.4.0",
+        "version": "1.5.0",
         "status": "running"
     }
-
 
 @app.get("/health")
 def health():
@@ -59,7 +55,6 @@ def health():
         "status": "healthy",
         "engine": "CLIPO"
     }
-
 
 @app.get("/capabilities")
 def capabilities():
@@ -73,14 +68,23 @@ def capabilities():
             "automatic_clipping",
             "manual_clip_selection",
             "vertical_9_16",
+            "1080x1920_export",
+            "60_fps_export",
+            "high_quality_h264",
             "streamer_camera_detection",
             "spanish_subtitles",
             "ffmpeg_video_processing",
             "video_trimming"
         ],
+        "export": {
+            "resolution": "1080x1920",
+            "fps": 60,
+            "codec": "H.264",
+            "audio": "AAC",
+            "format": "MP4"
+        },
         "status": "development"
     }
-
 
 @app.post("/analyze-audio")
 async def analyze_audio(file: UploadFile = File(...)):
@@ -137,9 +141,7 @@ async def analyze_audio(file: UploadFile = File(...)):
 
     finally:
         await file.close()
-
         cleanup_files(temp_path)
-
 
 @app.post("/detect-moments")
 def detect_moments_endpoint(payload: dict = Body(...)):
@@ -180,7 +182,6 @@ def detect_moments_endpoint(payload: dict = Body(...)):
             detail=f"Error detectando momentos: {str(error)}"
         )
 
-
 @app.post("/cut-video")
 async def cut_video(
     file: UploadFile = File(...),
@@ -218,7 +219,6 @@ async def cut_video(
             suffix=suffix
         ) as temp:
             input_path = temp.name
-
             total_size = 0
 
             while True:
@@ -276,10 +276,17 @@ async def cut_video(
                 detail=f"El video dura {video_duration:.2f} segundos. El segundo final supera su duración."
             )
 
-        output_fd, output_path = tempfile.mkstemp(
-            suffix=".mp4"
-        )
+        output_fd, output_path = tempfile.mkstemp(suffix=".mp4")
         os.close(output_fd)
+
+        video_filter = (
+            "scale=1080:1920:"
+            "force_original_aspect_ratio=decrease:"
+            "force_divisible_by=2,"
+            "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,"
+            "setsar=1,"
+            "fps=60"
+        )
 
         command = [
             "ffmpeg",
@@ -289,11 +296,18 @@ async def cut_video(
             "-t", str(end - start),
             "-map", "0:v:0",
             "-map", "0:a?",
+            "-vf", video_filter,
             "-c:v", "libx264",
             "-preset", "veryfast",
-            "-crf", "23",
+            "-crf", "18",
+            "-profile:v", "high",
+            "-level", "4.2",
+            "-pix_fmt", "yuv420p",
+            "-r", "60",
+            "-fps_mode", "cfr",
             "-c:a", "aac",
-            "-b:a", "128k",
+            "-b:a", "192k",
+            "-ar", "48000",
             "-movflags", "+faststart",
             "-sn",
             "-dn",
@@ -322,7 +336,7 @@ async def cut_video(
         return FileResponse(
             path=output_path,
             media_type="video/mp4",
-            filename="clipo_clip.mp4",
+            filename="clipo_clip_1080p_60fps.mp4",
             background=BackgroundTask(
                 cleanup_files,
                 input_path,
@@ -352,7 +366,6 @@ async def cut_video(
 
     finally:
         await file.close()
-
 
 @app.get("/video-engine")
 def video_engine():
