@@ -1,0 +1,16 @@
+
+.git
+.gitignore
+__pycache__
+*.pyc
+.venv
+venv
+.env
+.env.*
+*.mp4
+*.mov
+*.mkv
+*.webm
+temp/
+outputs/
+cache/
