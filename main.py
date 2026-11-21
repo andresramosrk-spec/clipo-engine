@@ -1,6 +1,7 @@
 
 import os
 import tempfile
+import subprocess
 
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body
@@ -12,7 +13,7 @@ from moments import detect_moments as find_moments
 app = FastAPI(
     title="CLIPO ENGINE",
     description="AI-powered video clipping engine",
-    version="1.2.0"
+    version="1.3.0"
 )
 
 app.add_middleware(
@@ -23,15 +24,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.get("/")
 def home():
     return {
         "project": "CLIPO",
-        "version": "1.2.0",
+        "version": "1.3.0",
         "status": "running"
     }
-
 
 @app.get("/health")
 def health():
@@ -39,7 +38,6 @@ def health():
         "status": "healthy",
         "engine": "CLIPO"
     }
-
 
 @app.get("/capabilities")
 def capabilities():
@@ -54,11 +52,11 @@ def capabilities():
             "manual_clip_selection",
             "vertical_9_16",
             "streamer_camera_detection",
-            "spanish_subtitles"
+            "spanish_subtitles",
+            "ffmpeg_video_processing"
         ],
         "status": "development"
     }
-
 
 @app.post("/analyze-audio")
 async def analyze_audio(file: UploadFile = File(...)):
@@ -119,7 +117,6 @@ async def analyze_audio(file: UploadFile = File(...)):
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
 
-
 @app.post("/detect-moments")
 def detect_moments_endpoint(payload: dict = Body(...)):
     try:
@@ -157,4 +154,32 @@ def detect_moments_endpoint(payload: dict = Body(...)):
         raise HTTPException(
             status_code=500,
             detail=f"Error detectando momentos: {str(error)}"
+        )
+
+@app.get("/video-engine")
+def video_engine():
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode != 0:
+            raise Exception("FFmpeg no está disponible")
+
+        version = result.stdout.splitlines()[0]
+
+        return {
+            "status": "success",
+            "engine": "FFmpeg",
+            "version": version,
+            "video_processing": True
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error comprobando FFmpeg: {str(error)}"
         )
